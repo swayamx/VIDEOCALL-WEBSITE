@@ -1,0 +1,237 @@
+// videoCallMessaging.js
+
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const path = require('path');
+
+// App setup
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+
+// Serve static files
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Socket.io connection
+io.on('connection', (socket) => {
+    console.log('A user connected:', socket.id);
+
+    // Handle messaging
+    socket.on('sendMessage', (message) => {
+        io.emit('receiveMessage', { user: socket.id, message });
+    });
+
+    // WebRTC signaling
+    socket.on('offer', (data) => {
+        socket.to(data.to).emit('offer', { offer: data.offer, from: socket.id });
+    });
+
+    socket.on('answer', (data) => {
+        socket.to(data.to).emit('answer', { answer: data.answer, from: socket.id });
+    });
+
+    socket.on('ice-candidate', (data) => {
+        socket.to(data.to).emit('ice-candidate', data.candidate);
+    });
+
+    socket.on('disconnect', () => {
+        console.log('User disconnected:', socket.id);
+    });
+});
+
+// Start the server
+const PORT = 3000;
+server.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+});
+
+// public/index.html
+const fs = require('fs');
+fs.writeFileSync(
+    path.join(__dirname, 'public', 'index.html'),
+    `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Call & Messaging</title>
+    <link rel="stylesheet" href="/style.css">
+    <script defer src="/socket.io/socket.io.js"></script>
+    <script defer src="/client.js"></script>
+</head>
+<body>
+    <h1>Video Call with Messaging</h1>
+    <div id="videoContainer">
+        <video id="localVideo" autoplay playsinline muted></video>
+        <video id="remoteVideo" autoplay playsinline></video>
+    </div>
+    <div id="chat">
+        <div id="messages"></div>
+        <input id="messageInput" type="text" placeholder="Type a message">
+        <button id="sendMessage">Send</button>
+    </div>
+</body>
+</html>`
+);
+
+// public/style.css
+fs.writeFileSync(
+    path.join(__dirname, 'public', 'style.css'),
+    `body {
+    font-family: Arial, sans-serif;
+    text-align: center;
+    background-color: #f9f9f9;
+    margin: 0;
+    padding: 0;
+}
+
+#videoContainer {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin: 20px 0;
+}
+
+video {
+    width: 300px;
+    margin: 0 10px;
+    border: 2px solid #ccc;
+    border-radius: 10px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+#chat {
+    border: 1px solid #ccc;
+    border-radius: 10px;
+    padding: 10px;
+    margin: 20px auto;
+    width: 80%;
+    max-width: 600px;
+    background-color: #fff;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+#messages {
+    height: 300px;
+    overflow-y: auto;
+    padding: 10px;
+    border-bottom: 1px solid #ccc;
+    margin-bottom: 10px;
+}
+
+#messages div {
+    margin: 5px 0;
+    padding: 5px;
+    background-color: #f1f1f1;
+    border-radius: 5px;
+}
+
+#messageInput {
+    width: 70%;
+    padding: 10px;
+    margin-right: 10px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+#sendMessage {
+    padding: 10px 20px;
+    background-color: #007bff;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+#sendMessage:hover {
+    background-color: #0056b3;
+}
+`
+);
+
+// public/client.js
+fs.writeFileSync(
+    path.join(__dirname, 'public', 'client.js'),
+    `const socket = io();
+const localVideo = document.getElementById('localVideo');
+const remoteVideo = document.getElementById('remoteVideo');
+const messagesDiv = document.getElementById('messages');
+const messageInput = document.getElementById('messageInput');
+const sendMessageButton = document.getElementById('sendMessage');
+
+let localStream;
+let peerConnection;
+
+const configuration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+// Get local media
+navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+    .then((stream) => {
+        localVideo.srcObject = stream;
+        localStream = stream;
+    })
+    .catch(console.error);
+
+// Messaging
+sendMessageButton.addEventListener('click', () => {
+    const message = messageInput.value;
+    if (message) {
+        socket.emit('sendMessage', message);
+        messageInput.value = '';
+    }
+});
+
+socket.on('receiveMessage', ({ user, message }) => {
+    const messageElem = document.createElement('div');
+    messageElem.textContent = `${user}: ${message}`;
+    messagesDiv.appendChild(messageElem);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+});
+
+// WebRTC
+socket.on('offer', async ({ offer, from }) => {
+    peerConnection = createPeerConnection(from);
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await peerConnection.createAnswer();
+    await peerConnection.setLocalDescription(answer);
+    socket.emit('answer', { answer, to: from });
+});
+
+socket.on('answer', async ({ answer }) => {
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+});
+
+socket.on('ice-candidate', (candidate) => {
+    peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+});
+
+function createPeerConnection(remoteSocketId) {
+    const pc = new RTCPeerConnection(configuration);
+    localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+
+    pc.onicecandidate = (event) => {
+        if (event.candidate) {
+            socket.emit('ice-candidate', { candidate: event.candidate, to: remoteSocketId });
+        }
+    };
+
+    pc.ontrack = (event) => {
+        remoteVideo.srcObject = event.streams[0];
+    };
+
+    return pc;
+}
+
+// Create offer
+socket.on('connect', () => {
+    peerConnection = createPeerConnection(socket.id);
+    peerConnection.createOffer()
+        .then((offer) => peerConnection.setLocalDescription(offer))
+        .then(() => {
+            socket.emit('offer', { offer: peerConnection.localDescription, to: socket.id });
+        });
+});
+`
+);
